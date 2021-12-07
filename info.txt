@@ -1,0 +1,39 @@
+1206
+论文基本上大体可能看懂了一部分，jikai学长做的工作确实能加速很多很多，暂时不太明白大师兄具体的意思是啥，是相关的对齐算法弄到GPU上试一试？
+简单先测了测现有的几个版本的速度
+
+fat
+len1=40 len2=40
+algin times=1e7
+M=2 I=-3 G=-5
+
+
+gcc -O3
+
+bitpal-single            : 15.4
+bitpal-single-packed     : 11.2
+bitpal-muti              : 28.2
+bitpal-muti-packed       : 18.7
+
+BGSA-CPU                 : 10.8
+BGSA-SSE                 : 4.7
+BGSA-AVX2                : 2.3
+BGSA-AVX512              : 1.6
+
+//TODO BGSA-CPU wrong answer ?
+
+由于默认BGSA就是用的bitpac算法中的packed版本，所以基本上BGSA-CPU和bitpal-single-packed时间是一样的，BGSA随着向量长度的拓展，时间基本上也减半，并且多线程的话加速比也基本是线性的，所以对GPU是个挑战，感觉BGSA已经挺快了。
+
+好啊，简单尝试在GPU上试试bitpal-single版本的试试
+
+
+1207
+昨晚简单回顾了一下gpu和cuda的知识，都忘得差不多了，今天下午看了看gpu-lcs的paper，KK他们基于list2中描述的递归求LCS（带路径）的算法，把其中求dp数组（即llcs）的部分换成了bit-parallel的版本，并且把llcs的部分挪到了gpu上，相比bit-parallel算法单核的cpu版本快了10+倍，比已有的gpu-lcs算法快了也是～10倍。文中核心部分的大部分篇幅都在描述+操作怎么在gpu上快速实现，暂时还没看这部分。
+
+参考这篇paper的经验，把bitpal改到gpu上是可以实现的，关键也是怎么处理+，可惜的是没找到paper的代码。
+找出了gpu-lcs引用里面的第二篇看了看，即bp-lcs，基本上的思路和bitpal很像，而且比它简单的多，并且限制了m<=w。
+
+然后又回过头去看了看bitpal-muti-word，就是用63来存数据，剩下的一位存进位，然后每个word之间串行，从低到高，期间不断传递进位（加法和左移操作都需要）；对于BGSA，因为sse之类的向量化add指令会抛弃进位，论文中说用MSB来存储进位，仔细读了读好像就是最高位，和bitpal差不多，不过KNC指令集的ADC指令恰好可以解决这个问题。//TODO但是BGSA中似乎fullbits一直都是0，也就是都是 reflen / SSEWORDSIZE-1
+，即并没有充分利用起那一位来。。。。生成文件的时候也没找到怎么把fullbits弄成1，难道是手动？
+
+好啊，思考了这么多之后感觉gpu-lcs有点子奇怪啊，显然他是muti-word的形式，m方向上分成32*32份，即每个block又32个线程（恰好是wrap的线程数），然后wordsize默认是32，即用unsigned int，然后grid这个维度就直接是ceil（m/1024），即整个m这么长的玩意全都并行？？先不管grid维度是不是串行的，一个block的32个thread肯定是并行的吧，那进位啥的咋处理啊，害得接着看论文。。。。。
